@@ -88,6 +88,7 @@ type Chapter = {
   status: string;
   chunks_done: number;
   chunks_total: number;
+  duration_ms?: number | null;
   audio_url: string | null;
   download_url: string | null;
   pending: boolean;
@@ -270,6 +271,13 @@ function formatEta(seconds: number | null): string | null {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function formatListenMinutes(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "0 min";
+  const minutes = Math.round(milliseconds / 60000);
+  if (minutes < 1) return "under 1 min";
+  return `${minutes} min`;
+}
+
 function loadChapterRange(jobId: string, fallback: { from: number; to: number }): { from: number; to: number } {
   try {
     const stored = localStorage.getItem(`chapter_range_${jobId}`);
@@ -291,6 +299,7 @@ function chapterStatusLabel(chapter: Chapter): string {
 function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: () => void }) {
   const percent = job.progress.chunks_total ? Math.round((job.progress.chunks_done / job.progress.chunks_total) * 100) : 0;
   const readyChapters = job.chapters.filter((chapter) => chapter.status === "done").length;
+  const availableListenMs = job.chapters.reduce((total, chapter) => total + (chapter.status === "done" ? chapter.duration_ms ?? 0 : 0), 0);
   const defaultRange = { from: job.chapters[0]?.index ?? 1, to: job.chapters[job.chapters.length - 1]?.index ?? 1 };
   const [fromIndex, setFromIndex] = useState(() => loadChapterRange(job.id, defaultRange).from);
   const [toIndex, setToIndex] = useState(() => loadChapterRange(job.id, defaultRange).to);
@@ -442,7 +451,9 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">{job.book.title}</h2>
-          <p className="text-sm text-ink/65">{job.book.author} · {job.progress.chapters_total} chapters · {job.status}</p>
+          <p className="text-sm text-ink/65">
+            {job.book.author} · {job.progress.chapters_total} chapters · {formatListenMinutes(availableListenMs)} available to listen · {job.status}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={start} title="Generate every non-finished chapter in the selected range" className="inline-flex items-center gap-2 rounded-md bg-moss px-3 py-2 text-sm font-medium text-white"><Play size={16} /> Start all</button>
@@ -512,7 +523,11 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{chapter.index}. {chapter.title}</p>
-                <p className="text-xs text-ink/60">{chapter.word_count} words · {chapterStatusLabel(chapter)} · {chapter.chunks_done}/{chapter.chunks_total}</p>
+                <p className="text-xs text-ink/60">
+                  {chapter.word_count} words
+                  {chapter.duration_ms ? <> · {formatListenMinutes(chapter.duration_ms)}</> : null}
+                  {" · "}{chapterStatusLabel(chapter)} · {chapter.chunks_done}/{chapter.chunks_total}
+                </p>
               </div>
               <div className="flex items-center gap-3">
                 {chapter.download_url && <a className="text-sm font-medium text-moss" href={authedMediaUrl(chapter.download_url, token)}>Download</a>}

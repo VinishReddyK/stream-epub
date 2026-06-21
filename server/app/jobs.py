@@ -24,6 +24,7 @@ from .services.audio import (
     list_ambience_categories,
     list_ambience_files,
     make_silence,
+    probe_duration_ms,
     resolve_ambience_file,
     synthesize_chunk,
 )
@@ -89,21 +90,44 @@ class JobStore:
         job["progress"]["eta_seconds"] = round(remaining / rate) if rate > 0 else None
         return job
 
+    @staticmethod
+    def _fill_missing_durations(job: dict[str, Any]) -> bool:
+        changed = False
+        chapter_dir = Path(job["paths"]["chapters"])
+        for chapter in job["chapters"]:
+            if chapter.get("status") != "done" or chapter.get("duration_ms"):
+                continue
+            path = chapter_dir / f"{chapter['filename_base']}.m4a"
+            if not path.exists():
+                continue
+            try:
+                chapter["duration_ms"] = probe_duration_ms(path)
+                changed = True
+            except Exception:
+                continue
+        return changed
+
     async def list_jobs(self, user: str) -> list[dict[str, Any]]:
         async with self._lock:
-            jobs = self._read()["jobs"].values()
+            data = self._read()
+            jobs = data["jobs"].values()
             owned = sorted(
                 [job for job in jobs if job.get("owner") == user],
                 key=lambda item: item.get("created_at", ""),
                 reverse=True,
             )
+            if any(self._fill_missing_durations(job) for job in owned):
+                self._write(data)
             return [self._annotate_job(job) for job in owned]
 
     async def get_job(self, job_id: str, user: str) -> dict[str, Any]:
         async with self._lock:
-            job = self._read()["jobs"].get(job_id)
+            data = self._read()
+            job = data["jobs"].get(job_id)
             if not job or job.get("owner") != user:
                 raise KeyError(job_id)
+            if self._fill_missing_durations(job):
+                self._write(data)
             return self._annotate_job(job)
 
     async def create_job(self, user: str, upload: UploadFile) -> dict[str, Any]:
@@ -143,6 +167,7 @@ class JobStore:
                     "status": "queued",
                     "chunks_done": 0,
                     "chunks_total": len(chunk_text(chapter.text, DEFAULT_CHUNK_CHARS)),
+                    "duration_ms": None,
                     "audio_url": None,
                     "download_url": None,
                     "error": None,
@@ -578,7 +603,11 @@ class JobStore:
             await asyncio.to_thread(add_background_noise, wav_path, noisy_path, noise_amplitude, noise_color)
             noisy_path.replace(wav_path)
         await asyncio.to_thread(concat_audio, [wav_path], m4a_path, ["-c:a", "aac", "-b:a", "192k", "-ar", "44100"])
-        await self.mutate_job(job_id, lambda item, idx=chapter["index"]: self._mark_chapter_done(item, idx, job_id))
+        duration_ms = await asyncio.to_thread(probe_duration_ms, m4a_path)
+        await self.mutate_job(
+            job_id,
+            lambda item, idx=chapter["index"], duration=duration_ms: self._mark_chapter_done(item, idx, job_id, duration),
+        )
 
     @staticmethod
     def _mark_chapter(job: dict[str, Any], index: int, status: str) -> None:
@@ -593,6 +622,7 @@ class JobStore:
             if chapter["index"] == index:
                 chapter["status"] = "queued"
                 chapter["chunks_done"] = 0
+                chapter["duration_ms"] = None
                 chapter["audio_url"] = None
                 chapter["download_url"] = None
                 chapter["error"] = None
@@ -616,11 +646,12 @@ class JobStore:
                 chapter["chunks_total"] = total
 
     @staticmethod
-    def _mark_chapter_done(job: dict[str, Any], index: int, job_id: str) -> None:
+    def _mark_chapter_done(job: dict[str, Any], index: int, job_id: str, duration_ms: int) -> None:
         for chapter in job["chapters"]:
             if chapter["index"] == index:
                 chapter["status"] = "done"
                 chapter["chunks_done"] = chapter["chunks_total"]
+                chapter["duration_ms"] = duration_ms
                 chapter["audio_url"] = f"/api/jobs/{job_id}/chapters/{index}/stream"
                 chapter["download_url"] = f"/api/jobs/{job_id}/chapters/{index}/download"
                 job["progress"]["chapters_done"] = sum(1 for item in job["chapters"] if item["status"] == "done")
