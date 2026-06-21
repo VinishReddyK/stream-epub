@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Download, KeyRound, Loader2, LogOut, Package, Play, RefreshCw, Shuffle, Square, Trash2, Upload, Volume2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, KeyRound, Loader2, LogOut, Package, Play, RefreshCw, Search, Shuffle, Square, Trash2, Upload, Volume2 } from "lucide-react";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
@@ -13,6 +13,8 @@ const DEFAULT_CHUNK_CHARS = 1000;
 const DEFAULT_CHUNK_CONCURRENCY = 10;
 const DEFAULT_NOISE_AMPLITUDE = 0.01;
 const DEFAULT_AMBIENCE_AMPLITUDE = 0.1;
+const CHAPTER_PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100];
+const DEFAULT_CHAPTER_PAGE_SIZE = 5;
 
 const NOISE_COLORS = [
   { id: "white", name: "White" },
@@ -280,20 +282,39 @@ function loadChapterRange(jobId: string, fallback: { from: number; to: number })
   return fallback;
 }
 
+function chapterStatusLabel(chapter: Chapter): string {
+  if (chapter.pending) return "pending";
+  if (chapter.status === "queued") return "not generated";
+  return chapter.status;
+}
+
 function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: () => void }) {
   const percent = job.progress.chunks_total ? Math.round((job.progress.chunks_done / job.progress.chunks_total) * 100) : 0;
   const readyChapters = job.chapters.filter((chapter) => chapter.status === "done").length;
   const defaultRange = { from: job.chapters[0]?.index ?? 1, to: job.chapters[job.chapters.length - 1]?.index ?? 1 };
   const [fromIndex, setFromIndex] = useState(() => loadChapterRange(job.id, defaultRange).from);
   const [toIndex, setToIndex] = useState(() => loadChapterRange(job.id, defaultRange).to);
+  const [chapterQuery, setChapterQuery] = useState("");
+  const [chapterStatusFilter, setChapterStatusFilter] = useState<"all" | "done" | "error" | "pending">("all");
+  const [chapterPage, setChapterPage] = useState(0);
+  const [chapterPageJump, setChapterPageJump] = useState("1");
+  const [chapterPageSize, setChapterPageSize] = useState(() => Number(localStorage.getItem("chapter_page_size")) || DEFAULT_CHAPTER_PAGE_SIZE);
+
+  function updateChapterPageSize(value: number) {
+    setChapterPageSize(value);
+    setChapterPage(0);
+    localStorage.setItem("chapter_page_size", String(value));
+  }
 
   function updateFromIndex(index: number) {
     setFromIndex(index);
+    setChapterPage(0);
     localStorage.setItem(`chapter_range_${job.id}`, JSON.stringify({ from: index, to: toIndex }));
   }
 
   function updateToIndex(index: number) {
     setToIndex(index);
+    setChapterPage(0);
     localStorage.setItem(`chapter_range_${job.id}`, JSON.stringify({ from: fromIndex, to: index }));
   }
 
@@ -381,7 +402,40 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
     refresh();
   }
 
-  const isActive = ["queued", "running", "packing"].includes(job.status);
+  const hasPendingChapters = job.chapters.some((chapter) => chapter.pending);
+  const isActive = ["running", "packing"].includes(job.status) || hasPendingChapters;
+
+  const rangeChapters = job.chapters.filter((chapter) => chapter.index >= Math.min(fromIndex, toIndex) && chapter.index <= Math.max(fromIndex, toIndex));
+  const filteredChapters = rangeChapters.filter((chapter) => {
+    if (chapterStatusFilter === "pending" && !chapter.pending) return false;
+    if (chapterStatusFilter !== "all" && chapterStatusFilter !== "pending" && chapter.status !== chapterStatusFilter) return false;
+    if (chapterQuery && !`${chapter.index}. ${chapter.title}`.toLowerCase().includes(chapterQuery.toLowerCase())) return false;
+    return true;
+  });
+  const pageCount = Math.max(1, Math.ceil(filteredChapters.length / chapterPageSize));
+  const currentPage = Math.min(chapterPage, pageCount - 1);
+  const pagedChapters = filteredChapters.slice(currentPage * chapterPageSize, currentPage * chapterPageSize + chapterPageSize);
+
+  useEffect(() => {
+    setChapterPageJump(String(currentPage + 1));
+  }, [currentPage, pageCount]);
+
+  function updateChapterQuery(value: string) {
+    setChapterQuery(value);
+    setChapterPage(0);
+  }
+
+  function updateChapterStatusFilter(value: typeof chapterStatusFilter) {
+    setChapterStatusFilter(value);
+    setChapterPage(0);
+  }
+
+  function jumpToChapterPage() {
+    const requestedPage = Number(chapterPageJump);
+    if (!Number.isFinite(requestedPage)) return;
+    const nextPage = Math.min(pageCount, Math.max(1, Math.trunc(requestedPage)));
+    setChapterPage(nextPage - 1);
+  }
 
   return (
     <article className="rounded-lg border border-line bg-white p-4">
@@ -392,7 +446,7 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={start} title="Generate every non-finished chapter in the selected range" className="inline-flex items-center gap-2 rounded-md bg-moss px-3 py-2 text-sm font-medium text-white"><Play size={16} /> Start all</button>
-          <button onClick={stop} disabled={!isActive} title="Stop everything currently generating or queued" className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Square size={16} /> Stop all</button>
+          <button onClick={stop} disabled={!isActive} title="Stop everything currently generating or pending" className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Square size={16} /> Stop all</button>
           <button onClick={packPartial} disabled={!readyChapters} className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Package size={16} /> Pack ready</button>
           {job.m4b_url && <a className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium" href={authedMediaUrl(job.m4b_url, token)}><Download size={16} /> M4B</a>}
           {job.partial_m4b_url && <a className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium" href={authedMediaUrl(job.partial_m4b_url, token)}>Partial</a>}
@@ -412,13 +466,53 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
         {formatEta(job.progress.eta_seconds) && <> · ETA {formatEta(job.progress.eta_seconds)}</>}
       </p>
       {job.error && <p className="mt-2 rounded-md bg-red-50 p-2 text-sm text-red-800">{job.error}</p>}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[180px] flex-1">
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink/40" />
+          <input
+            className="w-full rounded-md border border-line bg-white py-2 pl-8 pr-3 text-sm"
+            placeholder="Search chapters..."
+            value={chapterQuery}
+            onChange={(e) => updateChapterQuery(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-1">
+          {(["all", "done", "pending", "error"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => updateChapterStatusFilter(option)}
+              className={`rounded-md border px-2 py-1.5 text-xs font-medium capitalize ${chapterStatusFilter === option ? "border-moss bg-moss text-white" : "border-line text-ink/70"}`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1.5 text-xs font-medium text-ink/60">
+          Per page
+          <select
+            className="rounded-md border border-line bg-white px-2 py-1.5 text-xs"
+            value={chapterPageSize}
+            onChange={(e) => updateChapterPageSize(Number(e.target.value))}
+          >
+            {CHAPTER_PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <div className="mt-4 grid gap-3">
-        {job.chapters.filter((chapter) => chapter.index >= Math.min(fromIndex, toIndex) && chapter.index <= Math.max(fromIndex, toIndex)).map((chapter) => (
+        {!filteredChapters.length && (
+          <p className="rounded-md border border-line bg-cream p-3 text-sm text-ink/60">No chapters match this search/filter.</p>
+        )}
+        {pagedChapters.map((chapter) => (
           <div key={chapter.index} className="rounded-md border border-line bg-cream p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{chapter.index}. {chapter.title}</p>
-                <p className="text-xs text-ink/60">{chapter.word_count} words · {chapter.status} · {chapter.chunks_done}/{chapter.chunks_total}</p>
+                <p className="text-xs text-ink/60">{chapter.word_count} words · {chapterStatusLabel(chapter)} · {chapter.chunks_done}/{chapter.chunks_total}</p>
               </div>
               <div className="flex items-center gap-3">
                 {chapter.download_url && <a className="text-sm font-medium text-moss" href={authedMediaUrl(chapter.download_url, token)}>Download</a>}
@@ -465,6 +559,51 @@ function JobCard({ job, token, refresh }: { job: Job; token: string; refresh: ()
           </div>
         ))}
       </div>
+      {pageCount > 1 && (
+        <div className="mt-3 flex items-center justify-between text-sm text-ink/65">
+          <span>Page {currentPage + 1} of {pageCount} · {filteredChapters.length} chapters</span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor={`chapter-page-jump-${job.id}`} className="text-xs font-medium text-ink/60">Page</label>
+              <input
+                id={`chapter-page-jump-${job.id}`}
+                type="number"
+                min={1}
+                max={pageCount}
+                value={chapterPageJump}
+                onChange={(e) => setChapterPageJump(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") jumpToChapterPage();
+                }}
+                className="w-16 rounded-md border border-line bg-white px-2 py-1.5 text-xs"
+              />
+              <button
+                type="button"
+                onClick={jumpToChapterPage}
+                className="rounded-md border border-line px-2 py-1.5 text-xs font-medium"
+              >
+                Jump
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setChapterPage(Math.max(0, currentPage - 1))}
+              disabled={currentPage === 0}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-1.5 text-xs font-medium disabled:opacity-40"
+            >
+              <ChevronLeft size={14} /> Prev
+            </button>
+            <button
+              type="button"
+              onClick={() => setChapterPage(Math.min(pageCount - 1, currentPage + 1))}
+              disabled={currentPage >= pageCount - 1}
+              className="flex items-center gap-1 rounded-md border border-line px-2 py-1.5 text-xs font-medium disabled:opacity-40"
+            >
+              Next <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
