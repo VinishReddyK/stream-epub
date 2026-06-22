@@ -87,6 +87,11 @@ class StartRequest(BaseModel):
     ambience_random: bool = False
 
 
+class ChapterRangeRequest(BaseModel):
+    from_index: int | None = None
+    to_index: int | None = None
+
+
 class ListeningProgressRequest(BaseModel):
     chapter_index: int
     position_seconds: float
@@ -323,9 +328,10 @@ async def delete_job(job_id: str, user: str = Depends(current_user)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/pack-partial")
-async def pack_partial(job_id: str, user: str = Depends(current_user)) -> dict:
+async def pack_partial(job_id: str, body: ChapterRangeRequest | None = None, user: str = Depends(current_user)) -> dict:
     try:
-        return await store.pack_partial(job_id, user)
+        body = body or ChapterRangeRequest()
+        return await store.pack_partial(job_id, user, body.from_index, body.to_index)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:

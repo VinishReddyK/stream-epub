@@ -91,6 +91,20 @@ class JobStore:
         return job
 
     @staticmethod
+    def _chapter_range(from_index: int | None, to_index: int | None) -> tuple[int | None, int | None]:
+        if from_index is None and to_index is None:
+            return None, None
+        if from_index is None:
+            return to_index, to_index
+        if to_index is None:
+            return from_index, from_index
+        return min(from_index, to_index), max(from_index, to_index)
+
+    @staticmethod
+    def _chapter_in_range(chapter: dict[str, Any], from_index: int | None, to_index: int | None) -> bool:
+        return (from_index is None or chapter["index"] >= from_index) and (to_index is None or chapter["index"] <= to_index)
+
+    @staticmethod
     def _fill_missing_durations(job: dict[str, Any]) -> bool:
         changed = False
         chapter_dir = Path(job["paths"]["chapters"])
@@ -190,7 +204,7 @@ class JobStore:
                 "cover": str(cover_path) if cover else None,
                 "output": str(output_path),
             },
-            "settings": {"chunk_chars": DEFAULT_CHUNK_CHARS},
+            "settings": {"chunk_chars": DEFAULT_CHUNK_CHARS, "chapter_range": None},
             "progress": {
                 "chapters_done": 0,
                 "chapters_total": len(chapters),
@@ -250,14 +264,18 @@ class JobStore:
 
     async def start(self, job_id: str, user: str, options: dict[str, Any]) -> dict[str, Any]:
         job = await self.get_job(job_id, user)
-        from_index = options.get("from_index")
-        to_index = options.get("to_index")
+        from_index, to_index = self._chapter_range(options.get("from_index"), options.get("to_index"))
+        await self.mutate_job(
+            job_id,
+            lambda item, start=from_index, end=to_index: item.setdefault("settings", {}).update(
+                {"chapter_range": {"from_index": start, "to_index": end}}
+            ),
+        )
         targets = [
             (chapter["index"], options)
             for chapter in job["chapters"]
             if chapter["status"] != "done"
-            and (from_index is None or chapter["index"] >= from_index)
-            and (to_index is None or chapter["index"] <= to_index)
+            and self._chapter_in_range(chapter, from_index, to_index)
         ]
         await self._enqueue_chapters(job_id, user, targets)
         return await self.get_job(job_id, user)
@@ -427,10 +445,11 @@ class JobStore:
             self._write(data)
         self._notify(user)
 
-    async def pack_partial(self, job_id: str, user: str) -> dict[str, Any]:
+    async def pack_partial(self, job_id: str, user: str, from_index: int | None = None, to_index: int | None = None) -> dict[str, Any]:
         job = await self.get_job(job_id, user)
         partial_path = Path(job["paths"]["output"]).with_name(f"{Path(job['paths']['output']).stem}-partial.m4b")
-        await asyncio.to_thread(self._pack_available, job, partial_path)
+        from_index, to_index = self._chapter_range(from_index, to_index)
+        await asyncio.to_thread(self._pack_available, job, partial_path, from_index, to_index)
         return await self.mutate_job(
             job_id,
             lambda item: item.update(
@@ -449,10 +468,18 @@ class JobStore:
         while timestamps and timestamps[0] < cutoff:
             timestamps.pop(0)
 
-    def _pack_available(self, job: dict[str, Any], output_path: Path) -> None:
+    def _pack_available(
+        self,
+        job: dict[str, Any],
+        output_path: Path,
+        from_index: int | None = None,
+        to_index: int | None = None,
+    ) -> None:
         chapter_files = []
         chapter_dir = Path(job["paths"]["chapters"])
         for chapter in job["chapters"]:
+            if not self._chapter_in_range(chapter, from_index, to_index):
+                continue
             if chapter["status"] != "done":
                 continue
             path = chapter_dir / f"{chapter['filename_base']}.m4a"
@@ -500,9 +527,12 @@ class JobStore:
                     self._current_chapter.pop(job_id, None)
 
             job = await self.get_job(job_id, user)
-            if all(item["status"] == "done" for item in job["chapters"]):
+            chapter_range = job.get("settings", {}).get("chapter_range") or {}
+            from_index, to_index = self._chapter_range(chapter_range.get("from_index"), chapter_range.get("to_index"))
+            selected_chapters = [item for item in job["chapters"] if self._chapter_in_range(item, from_index, to_index)]
+            if selected_chapters and all(item["status"] == "done" for item in selected_chapters):
                 await self.patch_job(job_id, {"status": "packing"})
-                await asyncio.to_thread(self._pack_available, job, Path(job["paths"]["output"]))
+                await asyncio.to_thread(self._pack_available, job, Path(job["paths"]["output"]), from_index, to_index)
                 await self.patch_job(job_id, {"status": "done", "m4b_url": f"/api/jobs/{job_id}/m4b"})
             else:
                 await self.patch_job(job_id, {"status": "ready"})

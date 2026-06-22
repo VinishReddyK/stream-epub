@@ -401,7 +401,7 @@ def build_m4b(
     cmd += ["-f", "ffmetadata", "-i", str(meta_path), "-map", "0:a", "-map_metadata", str(input_index)]
     if cover_index is not None:
         cmd += ["-map", f"{cover_index}:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
-    cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-movflags", "+faststart+use_metadata_tags", str(output_path)]
+    cmd += ["-c:a", "copy", "-movflags", "+faststart+use_metadata_tags", str(output_path)]
 
     try:
         subprocess.run(cmd, check=True, capture_output=True)

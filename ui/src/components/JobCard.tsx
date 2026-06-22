@@ -13,6 +13,8 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
   const defaultRange = { from: job.chapters[0]?.index ?? 1, to: job.chapters[job.chapters.length - 1]?.index ?? 1 };
   const [fromIndex, setFromIndex] = useState(() => loadChapterRange(job.id, defaultRange).from);
   const [toIndex, setToIndex] = useState(() => loadChapterRange(job.id, defaultRange).to);
+  const selectedFromIndex = Math.min(fromIndex, toIndex);
+  const selectedToIndex = Math.max(fromIndex, toIndex);
   const [chapterQuery, setChapterQuery] = useState("");
   const [chapterStatusFilter, setChapterStatusFilter] = useState<"all" | "done" | "error" | "pending">("all");
   const [chapterPage, setChapterPage] = useState(0);
@@ -64,8 +66,8 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
         effects_chain: effectsChain ? JSON.parse(effectsChain) : null,
         chunk_chars: Number(localStorage.getItem("tts_chunk_chars")) || DEFAULT_CHUNK_CHARS,
         chunk_concurrency: Number(localStorage.getItem("tts_chunk_concurrency")) || DEFAULT_CHUNK_CONCURRENCY,
-        from_index: Math.min(fromIndex, toIndex),
-        to_index: Math.max(fromIndex, toIndex),
+        from_index: selectedFromIndex,
+        to_index: selectedToIndex,
         ...backgroundOptions()
       })
     });
@@ -105,7 +107,13 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
   }
 
   async function packPartial() {
-    await request(`/api/jobs/${job.id}/pack-partial`, token, { method: "POST" });
+    await request(`/api/jobs/${job.id}/pack-partial`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        from_index: selectedFromIndex,
+        to_index: selectedToIndex
+      })
+    });
     refresh();
   }
 
@@ -124,7 +132,8 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
   const hasPendingChapters = job.chapters.some((chapter) => chapter.pending);
   const isActive = ["running", "packing"].includes(job.status) || hasPendingChapters;
 
-  const rangeChapters = job.chapters.filter((chapter) => chapter.index >= Math.min(fromIndex, toIndex) && chapter.index <= Math.max(fromIndex, toIndex));
+  const rangeChapters = job.chapters.filter((chapter) => chapter.index >= selectedFromIndex && chapter.index <= selectedToIndex);
+  const readyChaptersInRange = rangeChapters.filter((chapter) => chapter.status === "done").length;
   const filteredChapters = rangeChapters.filter((chapter) => {
     if (chapterStatusFilter === "pending" && !chapter.pending) return false;
     if (chapterStatusFilter !== "all" && chapterStatusFilter !== "pending" && chapter.status !== chapterStatusFilter) return false;
@@ -168,7 +177,7 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
         <div className="flex flex-wrap gap-2">
           <button onClick={start} title="Generate every non-finished chapter in the selected range" className="inline-flex items-center gap-2 rounded-md bg-moss px-3 py-2 text-sm font-medium text-white"><Play size={16} /> Start all</button>
           <button onClick={stop} disabled={!isActive} title="Stop everything currently generating or pending" className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Square size={16} /> Stop all</button>
-          <button onClick={packPartial} disabled={!readyChapters} className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Package size={16} /> Pack ready</button>
+          <button onClick={packPartial} disabled={!readyChaptersInRange} title="Pack completed chapters in the selected range" className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium disabled:opacity-40"><Package size={16} /> Pack ready</button>
           {job.m4b_url && <a className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium" href={authedMediaUrl(job.m4b_url, token)}><Download size={16} /> M4B</a>}
           {job.partial_m4b_url && <a className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium" href={authedMediaUrl(job.partial_m4b_url, token)}>Partial</a>}
           <button onClick={remove} disabled={isActive} title={isActive ? "Stop the job before deleting it" : "Delete"} className="inline-flex items-center gap-2 rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-40"><Trash2 size={16} /></button>
@@ -332,4 +341,3 @@ export function JobCard({ job, token, refresh }: { job: Job; token: string; refr
     </article>
   );
 }
-
