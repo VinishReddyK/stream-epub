@@ -1,4 +1,5 @@
 const SHELL_CACHE = "stream-epub-shell-v2";
+const AUDIO_CACHE = "stream-epub-audio-v1";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -10,7 +11,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== SHELL_CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key !== SHELL_CACHE && key !== AUDIO_CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });

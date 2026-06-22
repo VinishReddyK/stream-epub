@@ -18,6 +18,7 @@ export const OFFLINE_AUDIO_CACHE = "stream-epub-audio-v1";
 export const OFFLINE_JOBS_KEY = "stream_epub_jobs_snapshot";
 export const LISTENING_JOB_KEY = "stream_epub_listen_job";
 export const LISTENING_CHAPTER_KEY = "stream_epub_listen_chapter";
+export const LISTENING_PROGRESS_KEY = "stream_epub_listen_progress";
 
 export const NOISE_COLORS = [
   { id: "white", name: "White" },

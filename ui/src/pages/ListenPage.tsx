@@ -1,20 +1,63 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, FastForward, Moon, Pause, Play, RefreshCw, Rewind, Sun, WifiOff } from "lucide-react";
-import { LISTENING_CHAPTER_KEY, LISTENING_JOB_KEY, OFFLINE_AUDIO_CACHE } from "../lib/constants";
+import { LISTENING_CHAPTER_KEY, LISTENING_JOB_KEY, LISTENING_PROGRESS_KEY, OFFLINE_AUDIO_CACHE } from "../lib/constants";
 import { authedMediaUrl, offlineAudioKey, request } from "../lib/api";
 import { formatClock, formatListenMinutes, formatSyncTime, latestListeningJob } from "../lib/utils";
 import { navigateTo } from "../lib/navigation";
 import type { Chapter, Job } from "../types";
 
+type LocalListeningProgress = {
+  job_id: string;
+  chapter_index: number;
+  position_seconds: number;
+  chapter_positions: Record<string, number>;
+  updated_at: string;
+};
+
+function loadLocalListeningProgress(): LocalListeningProgress | null {
+  try {
+    const stored = localStorage.getItem(LISTENING_PROGRESS_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    if (
+      typeof parsed.job_id === "string" &&
+      typeof parsed.chapter_index === "number" &&
+      typeof parsed.position_seconds === "number" &&
+      typeof parsed.updated_at === "string"
+    ) {
+      return {
+        job_id: parsed.job_id,
+        chapter_index: parsed.chapter_index,
+        position_seconds: parsed.position_seconds,
+        chapter_positions: typeof parsed.chapter_positions === "object" && parsed.chapter_positions ? parsed.chapter_positions : {},
+        updated_at: parsed.updated_at,
+      };
+    }
+  } catch {
+    // Ignore malformed local progress.
+  }
+  return null;
+}
+
+function isLocalProgressNewer(localProgress: LocalListeningProgress | null, serverUpdatedAt?: string | null) {
+  if (!localProgress) return false;
+  if (!serverUpdatedAt) return true;
+  return Date.parse(localProgress.updated_at) > Date.parse(serverUpdatedAt);
+}
+
 export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: string; refresh: () => void }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const initialLocalProgress = loadLocalListeningProgress();
   const initialProgressJob = latestListeningJob(jobs);
+  const initialLocalJob = initialLocalProgress ? jobs.find((job) => job.id === initialLocalProgress.job_id) : undefined;
   const initialReadyJob = jobs.find((job) => job.chapters.some((chapter) => chapter.status === "done" && chapter.audio_url));
-  const [selectedJobId, setSelectedJobId] = useState(initialProgressJob?.id || localStorage.getItem(LISTENING_JOB_KEY) || initialReadyJob?.id || "");
-  const [selectedChapterIndex, setSelectedChapterIndex] = useState(initialProgressJob?.listening_progress?.chapter_index || Number(localStorage.getItem(LISTENING_CHAPTER_KEY)) || 0);
+  const useInitialLocalProgress = isLocalProgressNewer(initialLocalProgress, initialLocalJob?.listening_progress?.updated_at);
+  const [selectedJobId, setSelectedJobId] = useState((useInitialLocalProgress ? initialLocalProgress?.job_id : initialProgressJob?.id) || localStorage.getItem(LISTENING_JOB_KEY) || initialReadyJob?.id || "");
+  const [selectedChapterIndex, setSelectedChapterIndex] = useState((useInitialLocalProgress ? initialLocalProgress?.chapter_index : initialProgressJob?.listening_progress?.chapter_index) || Number(localStorage.getItem(LISTENING_CHAPTER_KEY)) || 0);
   const [audioSrc, setAudioSrc] = useState("");
   const [objectUrl, setObjectUrl] = useState("");
-  const [lastSyncAt, setLastSyncAt] = useState<string | null>(initialProgressJob?.listening_progress?.updated_at || null);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>((useInitialLocalProgress ? initialLocalProgress?.updated_at : initialProgressJob?.listening_progress?.updated_at) || null);
+  const [localProgress, setLocalProgress] = useState<LocalListeningProgress | null>(initialLocalProgress);
   const [cachedChapters, setCachedChapters] = useState<Record<string, boolean>>({});
   const [savingChapters, setSavingChapters] = useState<Record<string, boolean>>({});
   const [currentTime, setCurrentTime] = useState(0);
@@ -27,6 +70,7 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   const manualChapterChangeUntilRef = useRef(0);
   const resumeAfterChapterSwitchRef = useRef(false);
   const resumeTimerRef = useRef<number | null>(null);
+  const lastLocalSaveAtRef = useRef(0);
   const syncingProgressRef = useRef(false);
 
   const readyJobs = jobs.filter((job) => job.chapters.some((chapter) => chapter.status === "done" && chapter.audio_url));
@@ -36,7 +80,9 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   const selectedChapterPosition = selectedChapter ? readyChapters.findIndex((chapter) => chapter.index === selectedChapter.index) : -1;
   const selectedCacheKey = selectedJob && selectedChapter ? offlineAudioKey(selectedJob.id, selectedChapter.index) : "";
   const serverProgress = selectedJob?.listening_progress || null;
-  const visibleLastSyncAt = serverProgress?.updated_at || lastSyncAt;
+  const selectedLocalProgress = localProgress?.job_id === selectedJob?.id ? localProgress : null;
+  const activeProgress = isLocalProgressNewer(selectedLocalProgress, serverProgress?.updated_at) ? selectedLocalProgress : serverProgress;
+  const visibleLastSyncAt = activeProgress?.updated_at || lastSyncAt;
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
   const isDark = theme === "dark";
   const pageClass = isDark ? "bg-[#0e1411] text-[#f7f8f5]" : "text-ink";
@@ -50,11 +96,30 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   const subtleButtonClass = isDark ? "text-white/65 hover:text-white" : "text-ink/55 hover:text-ink";
 
   function chapterPosition(chapterIndex: number): number {
-    if (!serverProgress) return 0;
-    const mapped = serverProgress.chapter_positions?.[String(chapterIndex)];
+    if (!activeProgress) return 0;
+    const mapped = activeProgress.chapter_positions?.[String(chapterIndex)];
     if (typeof mapped === "number" && Number.isFinite(mapped)) return mapped;
-    if (serverProgress.chapter_index === chapterIndex && Number.isFinite(serverProgress.position_seconds)) return serverProgress.position_seconds;
+    if (activeProgress.chapter_index === chapterIndex && Number.isFinite(activeProgress.position_seconds)) return activeProgress.position_seconds;
     return 0;
+  }
+
+  function saveLocalProgress(jobId: string, chapterIndex: number, positionSeconds: number) {
+    if (!Number.isFinite(positionSeconds)) return;
+    const next: LocalListeningProgress = {
+      job_id: jobId,
+      chapter_index: chapterIndex,
+      position_seconds: Math.max(0, positionSeconds),
+      chapter_positions: {
+        ...(localProgress?.job_id === jobId ? localProgress.chapter_positions : {}),
+        [String(chapterIndex)]: Math.max(0, positionSeconds),
+      },
+      updated_at: new Date().toISOString(),
+    };
+    localStorage.setItem(LISTENING_PROGRESS_KEY, JSON.stringify(next));
+    localStorage.setItem(LISTENING_JOB_KEY, jobId);
+    localStorage.setItem(LISTENING_CHAPTER_KEY, String(chapterIndex));
+    setLocalProgress(next);
+    setLastSyncAt(next.updated_at);
   }
 
   useEffect(() => {
@@ -64,9 +129,10 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   useEffect(() => {
     const progressJob = latestListeningJob(readyJobs);
     if (!progressJob?.listening_progress || selectedJobId) return;
+    if (isLocalProgressNewer(localProgress, progressJob.listening_progress.updated_at)) return;
     setSelectedJobId(progressJob.id);
     setSelectedChapterIndex(progressJob.listening_progress.chapter_index);
-  }, [readyJobs, selectedJobId]);
+  }, [readyJobs, selectedJobId, localProgress]);
 
   useEffect(() => {
     if (!selectedJob || !selectedChapter) return;
@@ -130,22 +196,22 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   }, [selectedJob?.id, selectedChapter?.index, token]);
 
   useEffect(() => {
-    if (!selectedJob || !serverProgress) return;
-    setLastSyncAt(serverProgress.updated_at);
-    const progressKey = `${selectedJob.id}:${selectedChapter?.index}:${serverProgress.updated_at}`;
+    if (!selectedJob || !activeProgress) return;
+    setLastSyncAt(activeProgress.updated_at);
+    const progressKey = `${selectedJob.id}:${selectedChapter?.index}:${activeProgress.updated_at}`;
     if (appliedProgressRef.current === progressKey) return;
     if (isPlaying) return;
     appliedProgressRef.current = progressKey;
-    if (serverProgress.chapter_index !== selectedChapter?.index) {
+    if (activeProgress.chapter_index !== selectedChapter?.index) {
       if (Date.now() < manualChapterChangeUntilRef.current) return;
-      setSelectedChapterIndex(serverProgress.chapter_index);
+      setSelectedChapterIndex(activeProgress.chapter_index);
       return;
     }
     const audio = audioRef.current;
     const nextTime = Math.max(0, selectedChapter ? chapterPosition(selectedChapter.index) : 0);
     setCurrentTime(nextTime);
     if (audio && Number.isFinite(nextTime)) audio.currentTime = nextTime;
-  }, [selectedJob?.id, serverProgress?.chapter_index, serverProgress?.position_seconds, serverProgress?.chapter_positions, serverProgress?.updated_at, selectedChapter?.index, isPlaying]);
+  }, [selectedJob?.id, activeProgress?.chapter_index, activeProgress?.position_seconds, activeProgress?.chapter_positions, activeProgress?.updated_at, selectedChapter?.index, isPlaying]);
 
   useEffect(() => {
     return () => {
@@ -165,8 +231,10 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   }, [theme, isDark]);
 
   async function syncListeningProgress(positionSeconds = audioRef.current?.currentTime ?? currentTimeRef.current) {
-    if (!selectedJob || !selectedChapter || syncingProgressRef.current) return;
+    if (!selectedJob || !selectedChapter) return;
     if (!Number.isFinite(positionSeconds)) return;
+    saveLocalProgress(selectedJob.id, selectedChapter.index, positionSeconds);
+    if (syncingProgressRef.current) return;
     syncingProgressRef.current = true;
     try {
       await request(`/api/jobs/${selectedJob.id}/listening-progress`, token, {
@@ -186,6 +254,7 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
 
   async function syncChapterSelection(chapterIndex: number) {
     if (!selectedJob) return;
+    saveLocalProgress(selectedJob.id, chapterIndex, chapterPosition(chapterIndex));
     try {
       await request(`/api/jobs/${selectedJob.id}/listening-progress`, token, {
         method: "POST",
@@ -211,9 +280,11 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   function selectJob(jobId: string) {
     syncListeningProgress();
     const job = readyJobs.find((item) => item.id === jobId);
+    const jobLocalProgress = localProgress?.job_id === jobId ? localProgress : null;
+    const useJobLocalProgress = isLocalProgressNewer(jobLocalProgress, job?.listening_progress?.updated_at);
     manualChapterChangeUntilRef.current = Date.now() + 8000;
     setSelectedJobId(jobId);
-    setSelectedChapterIndex(job?.listening_progress?.chapter_index || job?.chapters.find((chapter) => chapter.status === "done" && chapter.audio_url)?.index || 0);
+    setSelectedChapterIndex((useJobLocalProgress ? jobLocalProgress?.chapter_index : job?.listening_progress?.chapter_index) || job?.chapters.find((chapter) => chapter.status === "done" && chapter.audio_url)?.index || 0);
   }
 
   function skip(delta: number) {
@@ -326,9 +397,7 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   async function saveReadyChaptersOffline() {
     if (!selectedJob) return;
     for (const chapter of readyChapters) {
-      if (!cachedChapters[offlineAudioKey(selectedJob.id, chapter.index)]) {
-        await saveOffline(selectedJob, chapter);
-      }
+      await saveOffline(selectedJob, chapter);
     }
   }
 
@@ -466,8 +535,13 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
                     }
                   }}
                   onTimeUpdate={(e) => {
-                    currentTimeRef.current = e.currentTarget.currentTime;
-                    setCurrentTime(e.currentTarget.currentTime);
+                    const nextTime = e.currentTarget.currentTime;
+                    currentTimeRef.current = nextTime;
+                    setCurrentTime(nextTime);
+                    if (selectedJob && selectedChapter && Date.now() - lastLocalSaveAtRef.current > 1500) {
+                      lastLocalSaveAtRef.current = Date.now();
+                      saveLocalProgress(selectedJob.id, selectedChapter.index, nextTime);
+                    }
                   }}
                   onPlay={() => setIsPlaying(true)}
                   onPause={(e) => {

@@ -41,6 +41,24 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   const [ambienceRandomPerChapter, setAmbienceRandomPerChapter] = useState(localStorage.getItem("tts_ambience_random") === "true");
   const [previewError, setPreviewError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const pathRef = useRef(path);
+  const isMobileRef = useRef(isMobile);
+  const jobsRef = useRef(jobs);
+  const pendingJobsRef = useRef<Job[] | null>(null);
+
+  function hasReadyAudio(items: Job[]) {
+    return items.some((job) => job.chapters.some((chapter) => chapter.status === "done" && chapter.audio_url));
+  }
+
+  function onJobsUpdate(nextJobs: Job[]) {
+    localStorage.setItem(OFFLINE_JOBS_KEY, JSON.stringify(nextJobs));
+    setError("");
+    if ((pathRef.current === "/listen" || isMobileRef.current) && hasReadyAudio(jobsRef.current)) {
+      pendingJobsRef.current = nextJobs;
+      return;
+    }
+    setJobs(nextJobs);
+  }
 
   function persistSettings(updates: UserSettings) {
     Object.entries(updates).forEach(([key, value]) => {
@@ -93,12 +111,28 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   }, []);
 
   useEffect(() => {
+    pathRef.current = path;
+    if (path !== "/listen" && !isMobile && pendingJobsRef.current) {
+      setJobs(pendingJobsRef.current);
+      pendingJobsRef.current = null;
+    }
+  }, [path, isMobile]);
+
+  useEffect(() => {
     const query = window.matchMedia("(max-width: 767px)");
     const updateMobile = () => setIsMobile(query.matches);
     updateMobile();
     query.addEventListener("change", updateMobile);
     return () => query.removeEventListener("change", updateMobile);
   }, []);
+
+  useEffect(() => {
+    isMobileRef.current = isMobile;
+  }, [isMobile]);
+
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
 
   useEffect(() => {
     if (!isMobile || window.location.pathname === "/listen") return;
@@ -228,9 +262,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       socket.onmessage = (event) => {
         try {
           const nextJobs = JSON.parse(event.data);
-          setJobs(nextJobs);
-          localStorage.setItem(OFFLINE_JOBS_KEY, JSON.stringify(nextJobs));
-          setError("");
+          onJobsUpdate(nextJobs);
         } catch {
           // ignore malformed payloads
         }
