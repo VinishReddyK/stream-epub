@@ -1,6 +1,8 @@
 import type { ModelOption } from "../types";
 
-export const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const CONFIGURED_API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
+export const API = CONFIGURED_API_BASE_URL === undefined ? "http://127.0.0.1:8000" : CONFIGURED_API_BASE_URL;
 export const DEFAULT_TTS_BASE_URL = "http://127.0.0.1:17493";
 export const DEFAULT_TTS_PROFILE = "f275c129-9d3b-40fc-9cc1-90a62bb93a98";
 export const DEFAULT_TTS_LANGUAGE = "en";
