@@ -201,12 +201,12 @@ export function ListenPage({ jobs, token, refresh }: { jobs: Job[]; token: strin
   }
 
   useEffect(() => {
-    if (!selectedJob || !selectedChapter) return;
+    if (!selectedJob || !selectedChapter || !isPlaying) return;
     const timer = window.setInterval(() => {
       syncListeningProgress();
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [selectedJob?.id, selectedChapter?.index, token]);
+  }, [selectedJob?.id, selectedChapter?.index, token, isPlaying]);
 
   function selectJob(jobId: string) {
     syncListeningProgress();

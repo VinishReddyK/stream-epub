@@ -12,7 +12,39 @@ from typing import Any
 import jwt
 from fastapi import HTTPException, Request, status
 
-from .config import ACCESS_TOKEN_MINUTES, AUTH_FILE, JWT_ALGORITHM, JWT_SECRET
+from .config import (
+    ACCESS_TOKEN_MINUTES,
+    AUTH_FILE,
+    BACKGROUND_NOISE_AMPLITUDE,
+    DEFAULT_CHUNK_CHARS,
+    DEFAULT_CHUNK_CONCURRENCY,
+    DEFAULT_TTS_BASE_URL,
+    DEFAULT_TTS_ENGINE,
+    DEFAULT_TTS_LANGUAGE,
+    DEFAULT_TTS_MODEL,
+    DEFAULT_TTS_VOICE,
+    JWT_ALGORITHM,
+    JWT_SECRET,
+)
+
+
+DEFAULT_USER_SETTINGS: dict[str, Any] = {
+    "tts_base_url": DEFAULT_TTS_BASE_URL,
+    "tts_voice": DEFAULT_TTS_VOICE,
+    "tts_language": DEFAULT_TTS_LANGUAGE,
+    "tts_model_option": f"{DEFAULT_TTS_ENGINE}-{DEFAULT_TTS_MODEL}" if DEFAULT_TTS_MODEL else DEFAULT_TTS_ENGINE,
+    "tts_chunk_chars": DEFAULT_CHUNK_CHARS,
+    "tts_chunk_concurrency": DEFAULT_CHUNK_CONCURRENCY,
+    "tts_effects_id": "",
+    "tts_effects_chain": None,
+    "tts_bg_mode": "none",
+    "tts_noise_color": "white",
+    "tts_noise_amplitude": BACKGROUND_NOISE_AMPLITUDE,
+    "tts_ambience_category": "",
+    "tts_ambience_file": "",
+    "tts_ambience_amplitude": 0.1,
+    "tts_ambience_random": False,
+}
 
 def _hash_password(password: str, salt: bytes | None = None) -> dict[str, str]:
     salt = salt or os.urandom(16)
@@ -68,8 +100,27 @@ def change_password(username: str, current_password: str, new_password: str) -> 
     record = data.get("users", {}).get(username)
     if not record or not _verify_password(current_password, record):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
-    data["users"][username] = _hash_password(new_password)
+    settings = record.get("settings", {})
+    data["users"][username] = {**_hash_password(new_password), "settings": settings}
     _save_auth(data)
+
+
+def get_settings(username: str) -> dict[str, Any]:
+    record = _load_auth().get("users", {}).get(username)
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {**DEFAULT_USER_SETTINGS, **record.get("settings", {})}
+
+
+def update_settings(username: str, updates: dict[str, Any]) -> dict[str, Any]:
+    data = _load_auth()
+    record = data.get("users", {}).get(username)
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found.")
+    settings = record.setdefault("settings", {})
+    settings.update(updates)
+    _save_auth(data)
+    return {**DEFAULT_USER_SETTINGS, **settings}
 
 
 def decode_token(token: str) -> str:

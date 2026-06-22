@@ -4,7 +4,7 @@ import { DEFAULT_AMBIENCE_AMPLITUDE, DEFAULT_CHUNK_CHARS, DEFAULT_CHUNK_CONCURRE
 import { apiUrl, authHeaders, authedMediaUrl, request, wsUrl } from "../lib/api";
 import { loadJobsSnapshot } from "../lib/utils";
 import { navigateTo } from "../lib/navigation";
-import type { AmbienceOption, BackgroundMode, EffectPreset, Job, VoiceProfile } from "../types";
+import type { AmbienceOption, BackgroundMode, EffectPreset, Job, UserSettings, VoiceProfile } from "../types";
 import { JobCard } from "../components/JobCard";
 import { PasswordPanel } from "../components/PasswordPanel";
 import { ListenPage } from "./ListenPage";
@@ -42,6 +42,50 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   const [previewError, setPreviewError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
 
+  function persistSettings(updates: UserSettings) {
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, String(value));
+    });
+    request("/api/settings", token, {
+      method: "PUT",
+      body: JSON.stringify({ settings: updates }),
+    }).catch(() => undefined);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadUserSettings() {
+      try {
+        const settings = await request<UserSettings>("/api/settings", token);
+        if (cancelled) return;
+        if (typeof settings.tts_base_url === "string") setBaseUrl(settings.tts_base_url);
+        if (typeof settings.tts_voice === "string") setVoice(settings.tts_voice);
+        if (typeof settings.tts_language === "string") setLanguage(settings.tts_language);
+        if (typeof settings.tts_model_option === "string") setModelOptionId(settings.tts_model_option);
+        if (typeof settings.tts_chunk_chars === "number") setChunkChars(settings.tts_chunk_chars);
+        if (typeof settings.tts_chunk_concurrency === "number") setChunkConcurrency(settings.tts_chunk_concurrency);
+        if (typeof settings.tts_effects_id === "string") setEffectsId(settings.tts_effects_id);
+        if (typeof settings.tts_bg_mode === "string") setBgMode(settings.tts_bg_mode as BackgroundMode);
+        if (typeof settings.tts_noise_color === "string") setNoiseColor(settings.tts_noise_color);
+        if (typeof settings.tts_noise_amplitude === "number") setNoiseAmplitude(settings.tts_noise_amplitude);
+        if (typeof settings.tts_ambience_category === "string") setAmbienceCategory(settings.tts_ambience_category);
+        if (typeof settings.tts_ambience_file === "string") setAmbienceFile(settings.tts_ambience_file);
+        if (typeof settings.tts_ambience_amplitude === "number") setAmbienceAmplitude(settings.tts_ambience_amplitude);
+        if (typeof settings.tts_ambience_random === "boolean") setAmbienceRandomPerChapter(settings.tts_ambience_random);
+        Object.entries(settings).forEach(([key, value]) => {
+          if (value !== null && value !== undefined) localStorage.setItem(key, String(value));
+        });
+      } catch {
+        // Local settings remain as fallback.
+      }
+    }
+    loadUserSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   useEffect(() => {
     const updatePath = () => setPath(window.location.pathname);
     window.addEventListener("popstate", updatePath);
@@ -70,7 +114,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       setVoices(result);
       if (result.length && !result.some((profile) => profile.id === voice)) {
         setVoice(result[0].id);
-        localStorage.setItem("tts_voice", result[0].id);
+        persistSettings({ tts_voice: result[0].id });
       }
     } catch (err) {
       setVoices([]);
@@ -104,12 +148,11 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
 
   function selectEffects(id: string) {
     setEffectsId(id);
-    localStorage.setItem("tts_effects_id", id);
     const preset = effectsPresets.find((item) => item.id === id);
     if (preset) {
-      localStorage.setItem("tts_effects_chain", JSON.stringify(preset.effects_chain));
+      persistSettings({ tts_effects_id: id, tts_effects_chain: JSON.stringify(preset.effects_chain) });
     } else {
-      localStorage.removeItem("tts_effects_chain");
+      persistSettings({ tts_effects_id: id, tts_effects_chain: null });
     }
   }
 
@@ -120,7 +163,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       setAmbienceCategories(result);
       if (result.length && !result.some((item) => item.id === ambienceCategory)) {
         setAmbienceCategory(result[0].id);
-        localStorage.setItem("tts_ambience_category", result[0].id);
+        persistSettings({ tts_ambience_category: result[0].id });
       }
     } catch {
       setAmbienceCategories([]);
@@ -144,7 +187,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       setAmbienceFiles(result);
       if (result.length && !result.some((item) => item.id === ambienceFile)) {
         setAmbienceFile(result[0].id);
-        localStorage.setItem("tts_ambience_file", result[0].id);
+        persistSettings({ tts_ambience_file: result[0].id });
       }
     } catch {
       setAmbienceFiles([]);
@@ -159,7 +202,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
 
   function selectBgMode(mode: BackgroundMode) {
     setBgMode(mode);
-    localStorage.setItem("tts_bg_mode", mode);
+    persistSettings({ tts_bg_mode: mode });
   }
 
   async function refresh() {
@@ -208,59 +251,58 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   }, [token]);
 
   function saveSettings() {
-    localStorage.setItem("tts_base_url", baseUrl);
-    localStorage.setItem("tts_voice", voice);
+    persistSettings({ tts_base_url: baseUrl, tts_voice: voice });
   }
 
   function selectLanguage(value: string) {
     setLanguage(value);
-    localStorage.setItem("tts_language", value);
+    persistSettings({ tts_language: value });
   }
 
   function selectModelOption(id: string) {
     setModelOptionId(id);
-    localStorage.setItem("tts_model_option", id);
+    persistSettings({ tts_model_option: id });
   }
 
   function selectChunkChars(value: number) {
     setChunkChars(value);
-    localStorage.setItem("tts_chunk_chars", String(value));
+    persistSettings({ tts_chunk_chars: value });
   }
 
   function selectChunkConcurrency(value: number) {
     setChunkConcurrency(value);
-    localStorage.setItem("tts_chunk_concurrency", String(value));
+    persistSettings({ tts_chunk_concurrency: value });
   }
 
   function selectNoiseColor(value: string) {
     setNoiseColor(value);
-    localStorage.setItem("tts_noise_color", value);
+    persistSettings({ tts_noise_color: value });
   }
 
   function selectNoiseAmplitude(value: number) {
     setNoiseAmplitude(value);
-    localStorage.setItem("tts_noise_amplitude", String(value));
+    persistSettings({ tts_noise_amplitude: value });
   }
 
   function selectAmbienceCategory(value: string) {
     setAmbienceCategory(value);
-    localStorage.setItem("tts_ambience_category", value);
+    persistSettings({ tts_ambience_category: value });
     setAmbienceFile("");
   }
 
   function selectAmbienceFile(value: string) {
     setAmbienceFile(value);
-    localStorage.setItem("tts_ambience_file", value);
+    persistSettings({ tts_ambience_file: value });
   }
 
   function selectAmbienceAmplitude(value: number) {
     setAmbienceAmplitude(value);
-    localStorage.setItem("tts_ambience_amplitude", String(value));
+    persistSettings({ tts_ambience_amplitude: value });
   }
 
   function selectAmbienceRandomPerChapter(value: boolean) {
     setAmbienceRandomPerChapter(value);
-    localStorage.setItem("tts_ambience_random", String(value));
+    persistSettings({ tts_ambience_random: value });
   }
 
   async function randomizeAmbience() {
@@ -287,9 +329,8 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       if (!files.length) return;
       const file = files[Math.floor(Math.random() * files.length)].id;
       setAmbienceCategory(category);
-      localStorage.setItem("tts_ambience_category", category);
       setAmbienceFile(file);
-      localStorage.setItem("tts_ambience_file", file);
+      persistSettings({ tts_ambience_category: category, tts_ambience_file: file });
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : "Could not randomize ambiance");
     } finally {
@@ -371,7 +412,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
             <select
               className="mt-1 w-full rounded-md border border-line bg-white px-3 py-2 text-sm"
               value={voice}
-              onChange={(e) => { setVoice(e.target.value); localStorage.setItem("tts_voice", e.target.value); }}
+              onChange={(e) => { setVoice(e.target.value); persistSettings({ tts_voice: e.target.value }); }}
               disabled={loadingVoices || !voices.length}
             >
               {!voices.length && <option value={voice}>{voice}</option>}

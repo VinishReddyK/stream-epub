@@ -53,3 +53,5 @@ export type Job = {
   partial_m4b_url: string | null;
   error: string | null;
 };
+
+export type UserSettings = Record<string, string | number | boolean | null>;

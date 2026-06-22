@@ -25,13 +25,41 @@ echo "Building UI..."
 (cd "$UI_DIR" && VITE_API_BASE_URL="" npm run build)
 
 cleanup() {
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
+
+  echo
+  echo "Shutting down..."
+
   for pid in ${BACKEND_PID:-} ${PROXY_PID:-}; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
   done
+
+  for _ in {1..20}; do
+    local alive=0
+    for pid in ${BACKEND_PID:-} ${PROXY_PID:-}; do
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        alive=1
+      fi
+    done
+    [[ "$alive" -eq 0 ]] && break
+    sleep 0.25
+  done
+
+  for pid in ${BACKEND_PID:-} ${PROXY_PID:-}; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+
+  wait ${BACKEND_PID:-} ${PROXY_PID:-} 2>/dev/null || true
+  exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+trap 'cleanup $?' EXIT
 
 echo "Starting backend on http://$BACKEND_HOST:$BACKEND_PORT ..."
 (cd "$SERVER_DIR" && "$PYTHON" -m uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT") &
@@ -155,4 +183,14 @@ NODE
 PROXY_PID=$!
 
 echo "Ready: http://127.0.0.1:$PROXY_PORT"
-wait -n "$BACKEND_PID" "$PROXY_PID"
+while true; do
+  if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "Backend exited."
+    exit 1
+  fi
+  if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    echo "Proxy exited."
+    exit 1
+  fi
+  sleep 1
+done

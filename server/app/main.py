@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from .auth import authenticate, change_password, create_token, current_user, decode_token
+from .auth import authenticate, change_password, create_token, current_user, decode_token, get_settings, update_settings
 from .config import (
     BACKGROUND_NOISE_AMPLITUDE,
     DEFAULT_CHUNK_CHARS,
@@ -63,6 +63,10 @@ class PasswordRequest(BaseModel):
     new_password: str
 
 
+class SettingsRequest(BaseModel):
+    settings: dict
+
+
 class StartRequest(BaseModel):
     base_url: str = DEFAULT_TTS_BASE_URL
     provider: str = DEFAULT_TTS_PROVIDER
@@ -109,6 +113,16 @@ def me(user: str = Depends(current_user)) -> dict:
 def update_password(body: PasswordRequest, user: str = Depends(current_user)) -> dict:
     change_password(user, body.current_password, body.new_password)
     return {"ok": True}
+
+
+@app.get("/api/settings")
+def read_settings(user: str = Depends(current_user)) -> dict:
+    return get_settings(user)
+
+
+@app.put("/api/settings")
+def save_settings(body: SettingsRequest, user: str = Depends(current_user)) -> dict:
+    return update_settings(user, body.settings)
 
 
 @app.get("/api/tts/voicebox/profiles")
