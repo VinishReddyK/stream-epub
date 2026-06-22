@@ -83,6 +83,11 @@ class StartRequest(BaseModel):
     ambience_random: bool = False
 
 
+class ListeningProgressRequest(BaseModel):
+    chapter_index: int
+    position_seconds: float
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True}
@@ -272,6 +277,18 @@ async def stop_chapter(job_id: str, chapter_index: int, user: str = Depends(curr
         return await store.stop_chapter(job_id, user, chapter_index)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Job or chapter not found.") from exc
+
+
+@app.post("/api/jobs/{job_id}/listening-progress")
+async def update_listening_progress(
+    job_id: str, body: ListeningProgressRequest, user: str = Depends(current_user)
+) -> dict:
+    try:
+        return await store.update_listening_progress(job_id, user, body.chapter_index, body.position_seconds)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job or chapter not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/api/jobs/{job_id}/chapters/{chapter_index}")

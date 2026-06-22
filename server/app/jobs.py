@@ -198,6 +198,7 @@ class JobStore:
                 "chunks_total": sum(c["chunks_total"] for c in chapters),
             },
             "chapters": chapters,
+            "listening_progress": None,
             "m4b_url": None,
             "partial_m4b_url": None,
             "error": None,
@@ -313,6 +314,32 @@ class JobStore:
             await self.mutate_job(job_id, lambda item, idx=chapter_index: self._mark_chapter(item, idx, "stopped"))
 
         return await self.get_job(job_id, user)
+
+    async def update_listening_progress(
+        self, job_id: str, user: str, chapter_index: int, position_seconds: float
+    ) -> dict[str, Any]:
+        job = await self.get_job(job_id, user)
+        chapter = next((item for item in job["chapters"] if item["index"] == chapter_index), None)
+        if not chapter:
+            raise KeyError(chapter_index)
+        if chapter.get("status") != "done":
+            raise ValueError("Chapter audio is not ready yet.")
+
+        position = max(0.0, float(position_seconds))
+        await self.mutate_job(job_id, lambda item, idx=chapter_index, seconds=position: self._mark_listening_progress(item, idx, seconds))
+        return await self.get_job(job_id, user)
+
+    @staticmethod
+    def _mark_listening_progress(job: dict[str, Any], chapter_index: int, position_seconds: float) -> None:
+        progress = job.get("listening_progress") or {}
+        positions = dict(progress.get("chapter_positions") or {})
+        positions[str(chapter_index)] = round(position_seconds, 2)
+        job["listening_progress"] = {
+            "chapter_index": chapter_index,
+            "position_seconds": round(position_seconds, 2),
+            "chapter_positions": positions,
+            "updated_at": now_iso(),
+        }
 
     async def delete_chapter(self, job_id: str, user: str, chapter_index: int) -> dict[str, Any]:
         job = await self.get_job(job_id, user)
