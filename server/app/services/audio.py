@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
@@ -25,6 +26,9 @@ from ..config import (
 AMBIENCE_EXTENSIONS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac"}
 
 logger = logging.getLogger("stream_epub.tts")
+
+_VOICEBOX_MODEL_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_VOICEBOX_READY_MODELS: set[tuple[str, str]] = set()
 
 
 def require_ffmpeg() -> None:
@@ -90,6 +94,69 @@ async def list_voicebox_effect_presets(base_url: str) -> list[dict]:
         return response.json()
 
 
+def _voicebox_model_name(engine: str | None, model: str | None) -> str | None:
+    if engine == "qwen":
+        return f"qwen-tts-{model or '1.7B'}"
+    if engine == "qwen_custom_voice":
+        return f"qwen-custom-voice-{model or '1.7B'}"
+    if engine == "luxtts":
+        return "luxtts"
+    if engine == "chatterbox":
+        return "chatterbox-tts"
+    if engine == "chatterbox_turbo":
+        return "chatterbox-turbo"
+    if engine == "tada":
+        return "tada-3b-ml" if model == "3B" else "tada-1b"
+    if engine == "kokoro":
+        return "kokoro"
+    return None
+
+
+async def _ensure_voicebox_model(client: httpx.AsyncClient, base_url: str, engine: str, model: str) -> None:
+    model_name = _voicebox_model_name(engine, model)
+    if not model_name:
+        return
+
+    key = (base_url.rstrip("/"), model_name)
+    if key in _VOICEBOX_READY_MODELS:
+        return
+
+    lock = _VOICEBOX_MODEL_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        if key in _VOICEBOX_READY_MODELS:
+            return
+
+        status_url = key[0] + "/models/status"
+        download_url = key[0] + "/models/download"
+        response = await client.get(status_url)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        status = next((item for item in models if item.get("model_name") == model_name), None)
+        if not status:
+            raise RuntimeError(f"Voicebox model is not available: {model_name}")
+        if status.get("downloaded"):
+            _VOICEBOX_READY_MODELS.add(key)
+            return
+
+        logger.info("Voicebox model %s is not downloaded; requesting download.", model_name)
+        if not status.get("downloading"):
+            response = await client.post(download_url, json={"model_name": model_name})
+            response.raise_for_status()
+
+        for _ in range(1800):
+            await asyncio.sleep(2)
+            response = await client.get(status_url)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            status = next((item for item in models if item.get("model_name") == model_name), None)
+            if status and status.get("downloaded"):
+                logger.info("Voicebox model %s is downloaded.", model_name)
+                _VOICEBOX_READY_MODELS.add(key)
+                return
+
+        raise RuntimeError(f"Timed out waiting for Voicebox model download: {model_name}")
+
+
 async def synthesize_chunk(
     text: str,
     output_path: Path,
@@ -127,6 +194,8 @@ async def synthesize_chunk(
     timeout = httpx.Timeout(connect=20, read=600, write=60, pool=20)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
+            if provider == "voicebox":
+                await _ensure_voicebox_model(client, base_url, engine, model)
             async with client.stream("POST", url, json=payload) as response:
                 if response.is_error:
                     body = (await response.aread())[:2000]
